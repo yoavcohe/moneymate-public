@@ -1,0 +1,14 @@
+name = "moneymate-api"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+[[kv_namespaces]]
+binding = "MM"
+id = "REPLACE_WITH_KV_ID"
+
+[triggers]
+crons = ["* * * * *"]
+
+# Optional: restrict browser access to your app's origin
+# [vars]
+# ALLOWED_ORIGIN = "https://yoavcohe.github.io"
