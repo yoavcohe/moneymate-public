@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MoneyMate — ניהול כספים אישי</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>body{font-family:'Segoe UI',Tahoma,sans-serif}</style>
+</head>
+<body class="bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 min-h-screen">
+<header class="bg-white dark:bg-gray-800 shadow px-4 py-3 flex items-center justify-between">
+<h1 class="text-xl font-bold">💰 MoneyMate</h1>
+<button id="themeBtn" class="px-3 py-1 rounded bg-gray-200 dark:bg-gray-700">🌙/☀️</button>
+</header>
+<nav class="flex overflow-x-auto bg-white dark:bg-gray-800 border-b dark:border-gray-700">
+<button data-tab="dash" class="tab px-4 py-3 font-medium">סקירה</button>
+<button data-tab="expenses" class="tab px-4 py-3 font-medium">הוצאות</button>
+<button data-tab="import" class="tab px-4 py-3 font-medium">ייבוא דפי אשראי</button>
+<button data-tab="invest" class="tab px-4 py-3 font-medium">השקעות</button>
+<button data-tab="settings" class="tab px-4 py-3 font-medium">הגדרות</button>
+</nav>
+<main id="app" class="p-4 max-w-2xl mx-auto"></main>
+<script>
+const DEFAULT_CATS=['אוכל','תחבורה','דיור','בילויים','בריאות','קניות','אחר'];
+let state=JSON.parse(localStorage.getItem('mm')||'null')||{tx:[],invest:[],cats:[...DEFAULT_CATS],budget:{},rates:{USD:3.7,GBP:4.6},dark:false};
+function save(){localStorage.setItem('mm',JSON.stringify(state));}
+const fmt=n=>new Intl.NumberFormat('he-IL',{style:'currency',currency:'ILS',maximumFractionDigits:0}).format(n);
+const toILS=(a,c)=>c==='ILS'?a:a*(state.rates[c]||1);
+function el(h){const d=document.createElement('div');d.innerHTML=h;return d.firstElementChild;}
+function render(){
+ document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('border-b-2 border-blue-600',b.dataset.tab===state.tab));
+ const app=document.getElementById('app');app.innerHTML='';
+ if(state.tab==='dash')renderDash(app);
+ if(state.tab==='expenses')renderExpenses(app);
+ if(state.tab==='import')renderImport(app);
+ if(state.tab==='invest')renderInvest(app);
+ if(state.tab==='settings')renderSettings(app);
+ save();
+}
+function renderDash(app){
+ const now=new Date();const m=now.toISOString().slice(0,7);
+ const monthTx=state.tx.filter(t=>t.date.startsWith(m));
+ const exp=monthTx.filter(t=>t.type==='expense').reduce((s,t)=>s+toILS(t.amount,t.currency),0);
+ const inc=monthTx.filter(t=>t.type==='income').reduce((s,t)=>s+toILS(t.amount,t.currency),0);
+ const inv=state.invest.reduce((s,i)=>s+toILS(i.value,i.currency),0);
+ app.append(el(`<div class="grid grid-cols-2 gap-3 mb-4">
+ <div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow"><div class="text-sm text-gray-500">הכנסות החודש</div><div class="text-2xl font-bold text-green-600">${fmt(inc)}</div></div>
+ <div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow"><div class="text-sm text-gray-500">הוצאות החודש</div><div class="text-2xl font-bold text-red-600">${fmt(exp)}</div></div>
+ <div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow"><div class="text-sm text-gray-500">יתרה חודשית</div><div class="text-2xl font-bold">${fmt(inc-exp)}</div></div>
+ <div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow"><div class="text-sm text-gray-500">שווי השקעות</div><div class="text-2xl font-bold">${fmt(inv)}</div></div>
+ </div>`));
+ const byCat={};monthTx.filter(t=>t.type==='expense').forEach(t=>{const c=t.category||'אחר';byCat[c]=(byCat[c]||0)+toILS(t.amount,t.currency)});
+ const labels=Object.keys(byCat);const data=Object.values(byCat);
+ app.append(el('<div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow"><h2 class="font-bold mb-2">הוצאות לפי קטגוריה</h2><canvas id="chart"></canvas></div>'));
+ new Chart(document.getElementById('chart'),{type:'doughnut',data:{labels,datasets:[{data,backgroundColor:['#3b82f6','#ef4444','#10b981','#f59e0b','#8b5cf6','#ec4899','#6b7280']}]}});
+}
+function renderExpenses(app){
+ app.append(el(`<div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow mb-4">
+ <h2 class="font-bold mb-2">הוסף פעולה</h2>
+ <div class="grid grid-cols-2 gap-2">
+ <select id="type" class="p-2 rounded border dark:bg-gray-700"><option value="expense">הוצאה</option><option value="income">הכנסה</option></select>
+ <input id="amount" type="number" placeholder="סכום" class="p-2 rounded border dark:bg-gray-700">
+ <select id="currency" class="p-2 rounded border dark:bg-gray-700"><option>ILS</option><option>USD</option><option>GBP</option></select>
+ <select id="category" class="p-2 rounded border dark:bg-gray-700">${state.cats.map(c=>`<option>${c}</option>`).join('')}</select>
+ <input id="date" type="date" class="p-2 rounded border dark:bg-gray-700" value="${new Date().toISOString().slice(0,10)}">
+ <input id="note" placeholder="הערה" class="p-2 rounded border dark:bg-gray-700">
+ </div>
+ <button id="addTx" class="mt-3 w-full bg-blue-600 text-white py-2 rounded-lg font-bold">הוסף</button></div>`));
+ document.getElementById('addTx').onclick=()=>{
+ const t={id:Date.now(),type:document.getElementById('type').value,amount:+document.getElementById('amount').value,currency:document.getElementById('currency').value,category:document.getElementById('category').value,date:document.getElementById('date').value,note:document.getElementById('note').value};
+ if(t.amount>0){state.tx.unshift(t);render();}
+ };
+ app.append(el('<h2 class="font-bold mb-2">פעולות אחרונות</h2>'));
+ state.tx.slice(0,20).forEach(t=>{
+ app.append(el(`<div class="flex justify-between items-center bg-white dark:bg-gray-800 rounded-lg p-3 mb-2 shadow">
+ <div><div class="font-medium">${t.category} ${t.note?'— '+t.note:''}</div><div class="text-xs text-gray-500">${t.date}</div></div>
+ <div class="font-bold ${t.type==='expense'?'text-red-600':'text-green-600'}">${t.type==='expense'?'-':'+'}${fmt(toILS(t.amount,t.currency))}</div>
+ <button class="text-red-500" onclick="delTx(${t.id})">✕</button></div>`));
+ });
+}
+window.delTx=id=>{state.tx=state.tx.filter(t=>t.id!==id);render();};
+function renderImport(app){
+ app.append(el(`<div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow">
+ <h2 class="font-bold mb-2">העלאת דפי הוצאות / חיובי אשראי</h2>
+ <p class="text-sm text-gray-500 mb-3">העלה קובץ CSV או PDF. המערכת תנסה לזהות תאריך, סכום ותיאור, ותציע קטגוריה אוטומטית.</p>
+ <input id="file" type="file" accept=".csv,.pdf" class="w-full p-2 border rounded dark:bg-gray-700">
+ <div id="preview" class="mt-3"></div></div>`));
+ document.getElementById('file').onchange=e=>{
+ const f=e.target.files[0];if(!f)return;
+ if(f.name.endsWith('.csv')){const r=new FileReader();r.onload=()=>parseCSV(r.result);r.readAsText(f);}
+ else if(f.name.endsWith('.pdf')){parsePDF(f);}
+ };
+}
+function guessCat(desc){
+ const d=desc||'';
+ if(/מרקט|סופר|מכולת|שוק|קפה|מסעדה|food|cafe/i.test(d))return'אוכל';
+ if(/דלק|חניה|אוטובוס|רכבת|תחבורה|taxi|uber/i.test(d))return'תחבורה';
+ if(/שכירות|ארנונה|חשמל|מים|גז|דיור/i.test(d))return'דיור';
+ if(/מסעדה|בר|קולנוע|תיאטרון|בילוי/i.test(d))return'בילויים';
+ if(/רופא|רוקח|ביטוח|בריאות|pharm/i.test(d))return'בריאות';
+ if(/אמזון|עלי|עלי|shein|קניות|חנות/i.test(d))return'קניות';
+ return'אחר';
+}
+function parseCSV(text){
+ const lines=text.split(/\n/).filter(l=>l.trim());
+ const rows=lines.map(l=>l.split(/[,;]/).map(c=>c.trim().replace(/"/g,'')));
+ const preview=document.getElementById('preview');preview.innerHTML='<h3 class="font-bold mb-2">תצוגה מקדימה</h3>';
+ rows.slice(0,20).forEach(r=>{
+ const date=r.find(c=>/\d{2}[\/.-]\d{2}[\/.-]\d{2,4}/.test(c))||'';
+ const amount=parseFloat((r.find(c=>/^-?\d+[\.,]\d{2}$/.test(c))||'0').replace(',','.'));
+ const desc=r.filter(c=>c!==date&&!/^-?\d+[\.,]\d{2}$/.test(c)).join(' ');
+ preview.append(el(`<div class="flex justify-between p-2 border-b dark:border-gray-700 text-sm"><span>${date} ${desc}</span><span>${amount}</span></div>`));
+ });
+ const btn=el('<button class="mt-3 w-full bg-green-600 text-white py-2 rounded-lg font-bold">הוסף את כל הפעולות</button>');
+ btn.onclick=()=>{rows.forEach(r=>{const date=r.find(c=>/\d{2}[\/.-]\d{2}[\/.-]\d{2,4}/.test(c))||new Date().toISOString().slice(0,10);const amount=parseFloat((r.find(c=>/^-?\d+[\.,]\d{2}$/.test(c))||'0').replace(',','.'));const desc=r.filter(c=>c!==date&&!/^-?\d+[\.,]\d{2}$/.test(c)).join(' ');if(amount>0)state.tx.unshift({id:Date.now()+Math.random(),type:'expense',amount,currency:'ILS',category:guessCat(desc),date,note:desc});});save();render();};
+ preview.append(btn);
+}
+async function parsePDF(file){
+ const preview=document.getElementById('preview');preview.innerHTML='<p class="text-sm">מעבד PDF…</p>';
+ const buf=await file.arrayBuffer();
+ const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+ let text='';
+ for(let i=1;i<=pdf.numPages;i++){const page=await pdf.getPage(i);const c=await page.getTextContent();text+=c.items.map(it=>it.str).join(' ')+'\n';}
+ const amounts=[...text.matchAll(/([\d,]+\.\d{2})/g)].map(m=>parseFloat(m[1].replace(/,/g,''))).filter(a=>a>0);
+ preview.innerHTML=`<p class="text-sm">נמצאו ${amounts.length} סכומים פוטנציאליים. לצפייה ואישור — פתח את ה‑CSV המיוצא במחשב או השתמש ב‑CSV.</p>`;
+}
+function renderInvest(app){
+ app.append(el(`<div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow mb-4">
+ <h2 class="font-bold mb-2">הוסף השקעה</h2>
+ <div class="grid grid-cols-2 gap-2">
+ <input id="iname" placeholder="שם (למשל קרן S&P 500)" class="p-2 rounded border dark:bg-gray-700">
+ <select id="itype" class="p-2 rounded border dark:bg-gray-700"><option>קרן</option><option>מדד</option><option>מניה</option><option>מזומן</option></select>
+ <input id="iinvested" type="number" placeholder="סכום שהושקע" class="p-2 rounded border dark:bg-gray-700">
+ <input id="ivalue" type="number" placeholder="שווי נוכחי" class="p-2 rounded border dark:bg-gray-700">
+ <select id="icurrency" class="p-2 rounded border dark:bg-gray-700"><option>ILS</option><option>USD</option><option>GBP</option></select>
+ </div>
+ <button id="addInv" class="mt-3 w-full bg-blue-600 text-white py-2 rounded-lg font-bold">הוסף</button></div>`));
+ document.getElementById('addInv').onclick=()=>{
+ const i={id:Date.now(),name:document.getElementById('iname').value,type:document.getElementById('itype').value,invested:+document.getElementById('iinvested').value,value:+document.getElementById('ivalue').value,currency:document.getElementById('icurrency').value};
+ if(i.name&&i.value>0){state.invest.push(i);render();}
+ };
+ const total=state.invest.reduce((s,i)=>s+toILS(i.value,i.currency),0);
+ const cost=state.invest.reduce((s,i)=>s+toILS(i.invested,i.currency),0);
+ app.append(el(`<div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow mb-4"><div class="text-sm text-gray-500">שווי כולל</div><div class="text-2xl font-bold">${fmt(total)}</div><div class="text-sm ${total>=cost?'text-green-600':'text-red-600'}">תשואה: ${cost?(((total-cost)/cost)*100).toFixed(1):0}%</div></div>`));
+ state.invest.forEach(i=>{
+ const ret=i.invested?(((i.value-i.invested)/i.invested)*100).toFixed(1):0;
+ app.append(el(`<div class="flex justify-between items-center bg-white dark:bg-gray-800 rounded-lg p-3 mb-2 shadow"><div><div class="font-medium">${i.name}</div><div class="text-xs text-gray-500">${i.type} • ${i.currency}</div></div><div class="font-bold ${ret>=0?'text-green-600':'text-red-600'}">${ret}%</div><button class="text-red-500" onclick="delInv(${i.id})">✕</button></div>`));
+ });
+}
+window.delInv=id=>{state.invest=state.invest.filter(i=>i.id!==id);render();};
+function renderSettings(app){
+ app.append(el(`<div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow mb-4"><h2 class="font-bold mb-2">שערי המרה (לשקל)</h2>
+ <div class="grid grid-cols-2 gap-2"><label>USD</label><input id="rUSD" type="number" step="0.01" value="${state.rates.USD}" class="p-2 rounded border dark:bg-gray-700"></div>
+ <div class="grid grid-cols-2 gap-2 mt-2"><label>GBP</label><input id="rGBP" type="number" step="0.01" value="${state.rates.GBP}" class="p-2 rounded border dark:bg-gray-700"></div>
+ <button id="saveRates" class="mt-3 w-full bg-blue-600 text-white py-2 rounded-lg">שמור</button></div>`));
+ document.getElementById('saveRates').onclick=()=>{state.rates.USD=+document.getElementById('rUSD').value;state.rates.GBP=+document.getElementById('rGBP').value;save();render();};
+ app.append(el(`<div class="bg-white dark:bg-gray-800 rounded-xl p-4 shadow"><h2 class="font-bold mb-2">קטגוריות</h2><div class="flex flex-wrap gap-2">${state.cats.map(c=>`<span class="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded-full text-sm">${c}</span>`).join('')}</div>
+ <div class="flex gap-2 mt-3"><input id="newCat" placeholder="קטגוריה חדשה" class="flex-1 p-2 rounded border dark:bg-gray-700"><button id="addCat" class="bg-blue-600 text-white px-4 rounded">הוסף</button></div></div>`));
+ document.getElementById('addCat').onclick=()=>{const v=document.getElementById('newCat').value.trim();if(v&&!state.cats.includes(v)){state.cats.push(v);save();render();}};
+}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{state.tab=b.dataset.tab;render();});
+document.getElementById('themeBtn').onclick=()=>{document.documentElement.classList.toggle('dark');state.dark=!state.dark;save();};
+if(state.dark)document.documentElement.classList.add('dark');
+state.tab='dash';render();
+</script>
+</body>
+</html>
