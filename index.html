@@ -129,10 +129,12 @@ function normalize(){
   state.cats=arr(state.cats).length?arr(state.cats).map(String):[...DEFAULT_CATS];
   state.rates={USD:3.7,GBP:4.6,...(state.rates||{})};
   state.theme=state.theme||'auto';
+  state.recurring=arr(state.recurring);
+  state.recurring.forEach(r=>{if(r.id==null)r.id=uid();r.generated=arr(r.generated)});
 }
 normalize();
 const save=()=>{try{localStorage.setItem('mm',JSON.stringify(state))}catch(e){alert('לא ניתן לשמור בדפדפן. הנתונים לא גובו.')}};
-const ui={tab:'home',month:curMonth,showForm:false,editId:null,q:'',range:6,hcat:'',budCat:'',budAmt:''};
+const ui={imp:null,tab:'home',month:curMonth,showForm:false,editId:null,q:'',range:6,hcat:'',budCat:'',budAmt:''};
 
 /* ---------- helpers ---------- */
 const nf=new Intl.NumberFormat('he-IL',{style:'currency',currency:'ILS',minimumFractionDigits:0,maximumFractionDigits:2});
@@ -161,6 +163,74 @@ const ICONS={
 };
 const TABS=[['home','סקירה'],['tx','פעולות'],['budget','תקציב'],['goals','חיסכון'],['hist','היסטוריה'],['more','עוד']];
 const TITLES={home:'סקירה',tx:'פעולות',budget:'תקציב',goals:'יעדי חיסכון',hist:'היסטוריה ומגמות',more:'עוד'};
+
+
+/* ---------- recurring ---------- */
+const dim=k=>{const[y,m]=k.split('-').map(Number);return new Date(y,m,0).getDate()};
+function applyRecurring(){
+  let changed=false;const t=today();
+  for(const r of state.recurring){
+    if(!r.active)continue;
+    for(let k=r.start||curMonth;k<=curMonth;k=shift(k,1)){
+      if(r.generated.includes(k))continue;
+      const date=`${k}-${pad(Math.min(Number(r.day)||1,dim(k)))}`;
+      if(date>t)continue;
+      state.tx.push({id:uid(),type:r.type||'expense',amount:Number(r.amount),currency:r.currency||'ILS',category:r.category,date,note:r.name,rec:r.id});
+      r.generated.push(k);changed=true;
+    }
+  }
+  if(changed)save();
+}
+const upcoming=()=>{const day=Number(today().slice(8)),last=dim(curMonth);
+  return state.recurring.filter(r=>r.active&&r.type!=='income'&&Math.min(Number(r.day)||1,last)>day).sort((a,b)=>a.day-b.day)};
+
+/* ---------- CSV import ---------- */
+const KEYWORDS={'אוכל':['סופר','שופרסל','רמי לוי','מגה','יוחננוף','מסעדה','קפה','וולט','wolt','פיצה','מאפי','ויקטורי','אושר עד','תן ביס','10bis'],
+  'תחבורה':['דלק','פז ','סונול','דור אלון','רב-קו','רב קו','gett','חניה','אחוזות החוף','כביש 6','מוניות','פנגו','סלופארק'],
+  'בילויים':['סינמה','קולנוע','netflix','spotify','הופעה','yes planet','לב הכוכבים','פלייסטיישן','steam'],
+  'בריאות':['סופר-פארם','סופר פארם','מכבי','כללית','מאוחדת','לאומית','בית מרקחת','ניו פארם'],
+  'קניות':['amazon','אמזון','aliexpress','זארה','h&m','איביי','ebay','ikea','איקאה','קסטרו','פוקס','shein','זול סטוק'],
+  'דיור':['ארנונה','חברת חשמל','מקורות','תאגיד מים','שכר דירה','ועד בית','גז']};
+function guessCat(desc){const d=String(desc).toLowerCase();for(const[c,ws]of Object.entries(KEYWORDS))if(ws.some(w=>d.includes(w.toLowerCase())))return state.cats.includes(c)?c:'אחר';return 'אחר'}
+function parseCSV(text){
+  text=text.replace(/^﻿/,'');const first=text.split(/\r?\n/)[0]||'';
+  const delim=(first.match(/;/g)||[]).length>(first.match(/,/g)||[]).length?';':(first.includes('\t')?'\t':',');
+  const rows=[];let row=[],f='',q=false;
+  for(let i=0;i<text.length;i++){const c=text[i];
+    if(q){if(c==='"'){if(text[i+1]==='"'){f+='"';i++}else q=false}else f+=c}
+    else if(c==='"')q=true;
+    else if(c===delim){row.push(f);f=''}
+    else if(c==='\n'||c==='\r'){if(c==='\r'&&text[i+1]==='\n')i++;row.push(f);f='';if(row.some(x=>x.trim()))rows.push(row);row=[]}
+    else f+=c}
+  row.push(f);if(row.some(x=>x.trim()))rows.push(row);return rows;
+}
+function parseDate(s){s=String(s).trim();let m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);if(m)return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
+  m=s.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/);if(!m)return null;let y=+m[3];if(y<100)y+=2000;const d=+m[1],mo=+m[2];
+  return mo<1||mo>12||d<1||d>31?null:`${y}-${pad(mo)}-${pad(d)}`}
+function parseAmount(s){s=String(s).trim();if(!s)return NaN;let neg=/^\(.*\)$/.test(s)||/^-|-$/.test(s)||/^‏?-/.test(s);
+  s=s.replace(/[₪\s()\-‏‎]|ש"ח|nis/gi,'');
+  if(/,\d{1,2}$/.test(s)&&!/\.\d{1,2}$/.test(s))s=s.replace(/\./g,'').replace(',','.');else s=s.replace(/,/g,'');
+  const n=parseFloat(s);return Number.isFinite(n)?(neg?-n:n):NaN}
+function startImport(text){
+  const rows=parseCSV(text);if(rows.length<2){alert('לא נמצאו שורות בקובץ.');return}
+  const head=rows[0].map(h=>h.trim()),body=rows.slice(1);
+  const find=re=>{const i=head.findIndex(h=>re.test(h));return i<0?null:i};
+  let date=find(/תאריך|date/i),desc=find(/תיאור|שם בית|בית עסק|פרטים|description|merchant/i),amount=find(/סכום|חיוב|amount|debit/i);
+  const col=fn=>head.map((_,i)=>i).find(i=>body.slice(0,10).filter(r=>fn(r[i])).length>=Math.min(3,body.length)*.6);
+  if(date==null)date=col(v=>parseDate(v))??0;
+  if(amount==null)amount=col(v=>Number.isFinite(parseAmount(v))&&/\d/.test(v))??Math.min(2,head.length-1);
+  if(desc==null||desc===date||desc===amount)desc=head.map((_,i)=>i).find(i=>i!==date&&i!==amount)??0;
+  const anyNeg=body.some(r=>parseAmount(r[amount])<0);
+  ui.imp={head,body,date,desc,amount,mode:anyNeg?'bank':'card'};
+}
+function impRows(){
+  const{body,date,desc,amount,mode}=ui.imp;const out=[];
+  for(const r of body){const d=parseDate(r[date]),a=parseAmount(r[amount]);if(!d||!Number.isFinite(a)||a===0)continue;
+    const type=mode==='bank'?(a<0?'expense':'income'):(a<0?'income':'expense');
+    const note=String(r[desc]||'').trim().slice(0,160);
+    out.push({date:d,amount:Math.abs(a),type,note,category:type==='income'?'אחר':guessCat(note)})}
+  return out;
+}
 
 /* ---------- charts ---------- */
 function donut(items,top,bottom){
@@ -205,6 +275,8 @@ function viewHome(){
   }
   const ks=monthsBack(6),data=ks.map(x=>({k:x,...totals(x)})).map(x=>({k:x.k,a:x.inc,b:x.exp}));
   if(state.tx.length)h+=`<section class="card"><h2>6 חודשים אחרונים</h2>${bars(data,true)}<div class="key"><span><i style="background:var(--good)"></i>הכנסות</span><span><i style="background:var(--bad)"></i>הוצאות</span></div></section>`;
+  const up=upcoming();
+  if(up.length)h+=`<section class="card"><div class="between"><h2>חיובים קבועים קרובים</h2><b class="num">${money(up.reduce((s,r)=>s+ils(r),0))}</b></div>${up.slice(0,4).map(r=>`<div class="between" style="padding:4px 0"><span>${esc(r.name)} <small>· ב-${esc(r.day)} לחודש</small></span><span class="num">${money(ils(r))}</span></div>`).join('')}</section>`;
   const gs=state.goals.slice(0,2);
   if(gs.length)h+=`<section class="card"><div class="between"><h2>יעדי חיסכון</h2><button class="ib" data-a="tab" data-t="goals">הכול ←</button></div>${gs.map(goalMini).join('')}</section>`;
   return h;
@@ -307,7 +379,14 @@ function viewHist(){
 
 function viewMore(){
   const inv=state.invest,tv=inv.reduce((s,i)=>s+ils(i),0),tc=inv.reduce((s,i)=>s+(Number(i.invested)||0)*(!i.currency||i.currency==='ILS'?1:Number(state.rates[i.currency])||1),0);
-  let h=`<section class="card"><h2>קרנות והשקעות</h2>${inv.length?`<div class="between"><b style="font-size:22px">${m$(tv)}</b><span class="${tv-tc>=0?'pos':'neg'} num">${tv-tc>=0?'+':'−'}${money(Math.abs(tv-tc))}</span></div><p class="note">שווי ידני, ללא מחירי שוק בזמן אמת. רווח/הפסד פשוט, ללא מס ודיבידנדים.</p>`+inv.map(i=>{const cost=(Number(i.invested)||0)*(!i.currency||i.currency==='ILS'?1:Number(state.rates[i.currency])||1),gl=ils(i)-cost;return `<div class="row"><div class="rm"><b>${esc(i.name)}</b><small class="${gl>=0?'pos':'neg'} num">${gl>=0?'+':'−'}${money(Math.abs(gl))}</small></div><div class="ra">${m$(ils(i))}</div><button class="ib" data-a="delInv" data-id="${esc(i.id)}" aria-label="מחק">✕</button></div>`}).join(''):'<p>עוד לא הוספת השקעות.</p>'}
+  let h='';
+  if(ui.imp){const rs=impRows(),im=ui.imp,opt=(sel)=>im.head.map((x,i)=>`<option value="${i}" ${i===sel?'selected':''}>${esc(x||('עמודה '+(i+1)))}</option>`).join('');
+    h+=`<section class="card"><h2>ייבוא מקובץ</h2><p>נמצאו ${rs.length} שורות תקינות. בדוק שהעמודות נכונות.</p><div class="grid"><label>תאריך<select data-c="impcol" data-k="date">${opt(im.date)}</select></label><label>תיאור<select data-c="impcol" data-k="desc">${opt(im.desc)}</select></label></div><div class="grid"><label>סכום<select data-c="impcol" data-k="amount">${opt(im.amount)}</select></label><label>סוג הקובץ<select data-c="impmode"><option value="card" ${im.mode==='card'?'selected':''}>דף אשראי (חיובים חיוביים)</option><option value="bank" ${im.mode==='bank'?'selected':''}>בנק (שלילי = הוצאה)</option></select></label></div>${rs.slice(0,5).map(r=>`<div class="row"><div class="rm"><b>${esc(r.note||'—')}</b><small>${esc(r.date)} · ${esc(r.category)}</small></div><div class="ra ${r.type==='income'?'pos':'neg'}">${r.type==='income'?'+':'−'}${m$(r.amount)}</div></div>`).join('')}<div class="grid" style="margin-top:12px"><button class="btn" data-a="impGo" ${rs.length?'':'disabled'}>ייבא ${rs.length} פעולות</button><button class="btn ghost" data-a="impCancel">ביטול</button></div><p class="note">כפילויות (אותו תאריך, סכום ותיאור) ידולגו. הקטגוריות מנוחשות לפי מילות מפתח, ואפשר לערוך אחר כך. הקובץ נקרא בדפדפן בלבד ולא נשלח לשום מקום.</p></section>`}
+  const recT=state.recurring.filter(r=>r.active&&r.type!=='income').reduce((s,r)=>s+ils(r),0);
+  h+=`<section class="card"><h2>הוצאות קבועות ומנויים</h2>${state.recurring.length?`<div class="between"><small>סה״כ לחודש</small><b class="num">${money(recT)}</b></div>`+state.recurring.map(r=>`<div class="row"><div class="rm"><b>${esc(r.name)}</b><small>${esc(r.category)} · ב-${esc(r.day)} לחודש${r.active?'':' · מושהה'}</small></div><div class="ra ${r.type==='income'?'pos':''}">${m$(ils(r))}</div><button class="ib" data-a="togRec" data-id="${esc(r.id)}" aria-label="השהה או הפעל">${r.active?'⏸':'▶'}</button><button class="ib" data-a="delRec" data-id="${esc(r.id)}" aria-label="מחק">✕</button></div>`).join(''):'<p>מוסיפים פעם אחת (שכירות, נטפליקס, ביטוח) והפעולה נרשמת לבד בכל חודש.</p>'}
+  <form data-f="rec" style="margin-top:14px"><label>שם<input name="name" required maxlength="80"></label><div class="grid"><label>סכום<input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required></label><label>יום בחודש<input name="day" type="number" min="1" max="31" required value="1"></label></div><div class="grid"><label>קטגוריה<select name="category">${state.cats.map(c=>`<option>${esc(c)}</option>`).join('')}</select></label><label>סוג<select name="type"><option value="expense">הוצאה</option><option value="income">הכנסה</option></select></label></div><label>מתחיל מחודש<input name="start" type="month" required value="${curMonth}"></label><button class="btn">הוסף</button></form></section>`;
+  h+=`<section class="card"><h2>ייבוא דפי אשראי ובנק</h2><p>בחר קובץ CSV שהורדת מהאתר של הבנק או חברת האשראי. אם יש לך Excel, שמור אותו כ-CSV.</p><label class="btn ghost" style="margin:0;text-align:center;cursor:pointer">בחר קובץ CSV<input type="file" accept=".csv,text/csv,text/plain" data-c="csv" hidden></label></section>`;
+  h+=`<section class="card"><h2>קרנות והשקעות</h2>${inv.length?`<div class="between"><b style="font-size:22px">${m$(tv)}</b><span class="${tv-tc>=0?'pos':'neg'} num">${tv-tc>=0?'+':'−'}${money(Math.abs(tv-tc))}</span></div><p class="note">שווי ידני, ללא מחירי שוק בזמן אמת. רווח/הפסד פשוט, ללא מס ודיבידנדים.</p>`+inv.map(i=>{const cost=(Number(i.invested)||0)*(!i.currency||i.currency==='ILS'?1:Number(state.rates[i.currency])||1),gl=ils(i)-cost;return `<div class="row"><div class="rm"><b>${esc(i.name)}</b><small class="${gl>=0?'pos':'neg'} num">${gl>=0?'+':'−'}${money(Math.abs(gl))}</small></div><div class="ra">${m$(ils(i))}</div><button class="ib" data-a="delInv" data-id="${esc(i.id)}" aria-label="מחק">✕</button></div>`}).join(''):'<p>עוד לא הוספת השקעות.</p>'}
   <form data-f="inv" style="margin-top:14px"><label>שם הקרן או ההשקעה<input name="name" required maxlength="160"></label><div class="grid"><label>עלות רכישה<input name="cost" type="number" inputmode="decimal" min="0" step="0.01" required></label><label>שווי נוכחי<input name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" required></label></div><label>מטבע<select name="currency">${Object.entries(CUR).map(([c,n])=>`<option value="${c}">${n}</option>`).join('')}</select></label><button class="btn">הוסף השקעה</button></form></section>`;
   h+=`<section class="card"><h2>קטגוריות</h2><div class="chips">${state.cats.map((c,i)=>`<span class="chip"><span class="dot" style="background:${color(c)}"></span>${esc(c)}<button data-a="delCat" data-i="${i}" aria-label="מחק קטגוריה">✕</button></span>`).join('')}</div><form data-f="cat" style="display:flex;gap:8px"><input name="category" required maxlength="50" placeholder="קטגוריה חדשה" style="margin:0"><button class="btn" style="width:auto;padding:0 20px">הוסף</button></form></section>`;
   h+=`<section class="card"><h2>שערי מטבע</h2><p>ערכי ברירת מחדל, לא שערים עדכניים. עדכן לפני שמסתמכים על הסיכומים.</p><form data-f="rates"><div class="grid"><label>שקלים לדולר<input name="USD" type="number" min="0.01" step="0.0001" required value="${Number(state.rates.USD)}"></label><label>שקלים ללירה<input name="GBP" type="number" min="0.01" step="0.0001" required value="${Number(state.rates.GBP)}"></label></div><button class="btn">שמור שערים</button></form></section>`;
@@ -347,6 +426,12 @@ const actions={
   delInv:(el)=>{if(confirm('למחוק את ההשקעה?')){state.invest=state.invest.filter(i=>String(i.id)!==el.dataset.id);save();render()}},
   delCat:(el)=>{const c=state.cats[Number(el.dataset.i)];if(state.cats.length>1&&confirm(`למחוק את "${c}"? פעולות קיימות ישמרו את הקטגוריה.`)){state.cats.splice(Number(el.dataset.i),1);save();render()}},
   sample:()=>{addSample();ui.tab='home';ui.month=curMonth;render()},
+  impGo:()=>{const rs=impRows(),seen=new Set(state.tx.map(t=>`${t.date}|${Number(t.amount)}|${t.note||t.name||''}`));let n=0;
+    for(const r of rs){const key=`${r.date}|${r.amount}|${r.note}`;if(seen.has(key))continue;seen.add(key);state.tx.push({id:uid(),currency:'ILS',imported:true,...r});n++}
+    ui.imp=null;save();alert(`יובאו ${n} פעולות. ${rs.length-n} כפילויות דולגו.`);ui.tab='tx';ui.month=curMonth;render()},
+  impCancel:()=>{ui.imp=null;render()},
+  togRec:(el)=>{const r=state.recurring.find(x=>String(x.id)===el.dataset.id);if(r){r.active=!r.active;applyRecurring();save();render()}},
+  delRec:(el)=>{if(confirm('למחוק? פעולות שכבר נרשמו יישארו.')){state.recurring=state.recurring.filter(x=>String(x.id)!==el.dataset.id);save();render()}},
   clearSample:()=>{if(confirm('למחוק רק את נתוני הדוגמה?')){state.tx=state.tx.filter(t=>!t.sample);state.goals=state.goals.filter(g=>!g.sample);save();render()}},
   clearAll:()=>{if(confirm('למחוק את כל הנתונים? אי אפשר לבטל.')&&confirm('בטוח? מומלץ להוריד גיבוי קודם.')){state={};normalize();save();render()}},
   backup:()=>{const u=URL.createObjectURL(new Blob([JSON.stringify(state,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=u;a.download=`moneymate-backup-${today()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)}
@@ -360,6 +445,8 @@ const forms={
   goal:f=>{const d=Object.fromEntries(new FormData(f)),t=Number(d.target);if(!(t>0)||!d.name.trim())return;state.goals.push({id:uid(),name:d.name.trim(),target:t,saved:Number(d.saved)||0,deadline:d.deadline||'',deposits:[]});save();render()},
   dep:f=>{const d=Object.fromEntries(new FormData(f)),a=Number(d.amount);if(!Number.isFinite(a)||a===0)return;const g=state.goals.find(x=>String(x.id)===d.id);if(g){g.deposits.push({d:today(),a});save();render()}},
   inv:f=>{const d=Object.fromEntries(new FormData(f));state.invest.push({id:uid(),name:d.name.trim(),type:'קרן',invested:Number(d.cost)||0,value:Number(d.amount)||0,currency:CUR[d.currency]?d.currency:'ILS'});save();render()},
+  rec:f=>{const d=Object.fromEntries(new FormData(f)),a=Number(d.amount),day=Math.min(31,Math.max(1,Number(d.day)||1));if(!(a>0)||!d.name.trim())return;
+    state.recurring.push({id:uid(),name:d.name.trim(),amount:a,day,category:d.category,type:d.type==='income'?'income':'expense',currency:'ILS',active:true,start:d.start||curMonth,generated:[]});applyRecurring();save();render()},
   cat:f=>{const c=new FormData(f).get('category').trim();if(c&&!state.cats.includes(c))state.cats.push(c);save();render()},
   rates:f=>{const d=new FormData(f),u=Number(d.get('USD')),g=Number(d.get('GBP'));if(u>0&&g>0){state.rates={USD:u,GBP:g};save();render()}}
 };
@@ -370,6 +457,11 @@ document.addEventListener('change',e=>{
   const c=e.target.dataset.c;
   if(c==='hcat'){ui.hcat=e.target.value;render()}
   if(c==='theme'){state.theme=e.target.value;save();render()}
+  if(c==='impcol'){ui.imp[e.target.dataset.k]=Number(e.target.value);render()}
+  if(c==='impmode'){ui.imp.mode=e.target.value;render()}
+  if(c==='csv'){const file=e.target.files[0];if(!file)return;const r=new FileReader();r.onload=()=>{
+    let txt=new TextDecoder('utf-8').decode(r.result);if(txt.includes('\uFFFD'))txt=new TextDecoder('windows-1255').decode(r.result);
+    startImport(txt);render()};r.readAsArrayBuffer(file)}
   if(c==='import'){const file=e.target.files[0];if(!file)return;const r=new FileReader();r.onload=()=>{try{
     const d=JSON.parse(r.result);if(!d||typeof d!=='object')throw 0;
     if(!confirm('לשחזר מהגיבוי? הנתונים הנוכחיים יוחלפו.'))return;
@@ -396,6 +488,7 @@ function addSample(){
   state.goals.push({id:uid(),sample:true,name:'חופשה',target:12000,saved:3500,deadline:shift(curMonth,8)+'-01',deposits:[]});
   save();
 }
+applyRecurring();
 render();
 </script>
 </body>
